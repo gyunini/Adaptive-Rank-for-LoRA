@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=test
+#SBATCH --job-name=test_lora
 #SBATCH --nodelist=ubuntu
 #SBATCH --output=logs/lora_%j.out
 #SBATCH --error=logs/lora_%j.err
@@ -15,7 +15,7 @@ source .venv/bin/activate
 
 echo "CUDA: $(python -c 'import torch; print(torch.cuda.is_available())')"
 
-CUDA_DEVICE=1 python src/nlu-cnndailymail.py --method adalora --budget small
+CUDA_DEVICE=1 python src/nlu-cnndailymail.py --method lora --budget small
     
 echo ""
 echo "=== 테스트 완료 ==="

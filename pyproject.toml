@@ -16,5 +16,8 @@ dependencies = [
     "sentencepiece>=0.1.0",
     "scipy>=1.0.0",
     "scikit-learn>=1.0.0",
+    "absl-py>=2.3.1",
+    "nltk>=3.9.1",
+    "rouge-score>=0.1.2",
 ]
 
