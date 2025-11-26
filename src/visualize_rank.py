@@ -14,7 +14,7 @@ from transformers import AutoModelForSequenceClassification
 # ==========================================
 # 학습된 체크포인트 경로를 지정
 # 예: ./outputs_sst2/adalora_small/checkpoint-50520
-CHECKPOINT_PATH = "./outputs_sst2/adalora_small/epoch-24"
+CHECKPOINT_PATH = "./outputs_mnli/adalora_small/epoch-1"
 # ==========================================
 
 

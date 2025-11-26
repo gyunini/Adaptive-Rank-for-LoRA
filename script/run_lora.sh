@@ -16,7 +16,7 @@ source .venv/bin/activate
 
 echo "CUDA: $(python -c 'import torch; print(torch.cuda.is_available())')"
 
-CUDA_DEVICE=2 python src/glue-sst2.py --method adalora --budget small
+CUDA_DEVICE=2 python src/glue-mnli.py --method adalora --budget small
     
 echo ""
 echo "=== 테스트 완료 ==="
