@@ -16,11 +16,7 @@ from transformers import (
     get_linear_schedule_with_warmup,
     set_seed,
 )
-
-try:
-    from adaptive_lora import apply_adaptive_lora, PlateauRankScheduler
-except ImportError:
-    from custom_adaptive_rank import apply_adaptive_lora, PlateauRankScheduler
+from custom_adaptive_rank import apply_adaptive_lora, PlateauRankScheduler
 
 
 TARGET_MODULES = [
