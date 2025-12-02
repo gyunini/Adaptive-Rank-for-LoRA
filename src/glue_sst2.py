@@ -56,18 +56,12 @@ def parse_args():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="./outputs_mnli",
+        default="./outputs_sst2",
     )
     parser.add_argument(
         "--seed",
         type=int,
         default=42,
-    )
-    parser.add_argument(
-        "--num_train_epochs",
-        type=int,
-        default=6,
-        help="MNLI는 데이터가 커서 기본값을 6 에폭으로 둠 (필요하면 수정)",
     )
 
     return parser.parse_args()
@@ -152,13 +146,12 @@ def main():
     model_name = "microsoft/deberta-v3-base"
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    raw_datasets = load_dataset("glue", "mnli")
+    raw_datasets = load_dataset("glue", "sst2")
     tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=False)
 
     def preprocess_fn(examples):
         return tokenizer(
-            examples["premise"],
-            examples["hypothesis"],
+            examples["sentence"],
             truncation=True,
             max_length=128,
         )
@@ -166,32 +159,27 @@ def main():
     encoded = raw_datasets.map(
         preprocess_fn,
         batched=True,
-        remove_columns=["premise", "hypothesis"],
+        remove_columns=["sentence"],
     )
 
-    # 모델 로드 (MNLI → num_labels=3)
     config = AutoConfig.from_pretrained(
         model_name,
         classifier_dropout=0.0,
-        num_labels=3,
+        num_labels=2,
     )
     base_model = AutoModelForSequenceClassification.from_pretrained(
         model_name,
         config=config,
     )
 
-    # total_step 계산
-    num_train_epochs = args.num_train_epochs
-    per_device_train_batch_size = 32
+    num_train_epochs = 16 # 24
+    per_device_train_batch_size = 8 # 32
     train_dataset_size = len(encoded["train"])
-    steps_per_epoch = train_dataset_size // per_device_train_batch_size
-    total_steps = steps_per_epoch * num_train_epochs
+    total_steps = (train_dataset_size // per_device_train_batch_size) * num_train_epochs
 
     print(f"train_dataset_size = {train_dataset_size}")
-    print(f"steps_per_epoch = {steps_per_epoch}")
     print(f"total_steps (expected optimizer steps) = {total_steps}")
 
-    # LoRA / AdaLoRA 설정
     peft_config = get_peft_config(
         args.method,
         args.budget,
@@ -204,7 +192,7 @@ def main():
     print_trainable_parameters(model)
 
     data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
-    metric = evaluate.load("glue", "mnli")
+    metric = evaluate.load("glue", "sst2")
 
     train_dataloader = DataLoader(
         encoded["train"],
@@ -212,15 +200,8 @@ def main():
         shuffle=True,
         collate_fn=data_collator,
     )
-
-    eval_matched_dataloader = DataLoader(
-        encoded["validation_matched"],
-        batch_size=64,
-        shuffle=False,
-        collate_fn=data_collator,
-    )
-    eval_mismatched_dataloader = DataLoader(
-        encoded["validation_mismatched"],
+    eval_dataloader = DataLoader(
+        encoded["validation"],
         batch_size=64,
         shuffle=False,
         collate_fn=data_collator,
@@ -245,9 +226,7 @@ def main():
             "weight_decay": 0.0,
         },
     ]
-
-    lr = 8e-4 if args.method == "adalora" else 1e-4 
-    optimizer = AdamW(optimizer_grouped_parameters, lr=lr)
+    optimizer = AdamW(optimizer_grouped_parameters, lr=6e-5) # 8e-4
 
     warmup_steps = int(total_steps * 0.1)
     lr_scheduler = get_linear_schedule_with_warmup(
@@ -298,43 +277,36 @@ def main():
                     f"epoch_loss_avg: {avg_loss:.4f}"
                 )
 
+
         # ====== Epoch 끝난 후 평가 ======
-        def run_eval(dataloader, split_name: str):
-            model.eval()
-            all_preds = []
-            all_labels = []
-            eval_loss = 0.0
+        model.eval()
+        all_preds = []
+        all_labels = []
+        eval_loss = 0.0
 
-            with torch.no_grad():
-                for batch in dataloader:
-                    labels = batch["labels"]
-                    inputs = {k: v for k, v in batch.items() if k not in ["labels", "label", "idx"]}
+        with torch.no_grad():
+            for batch in eval_dataloader:
+                labels = batch["labels"]
+                inputs = {k: v for k, v in batch.items() if k not in ["labels", "label", "idx"]}
 
-                    inputs = {k: v.to(device) for k, v in inputs.items()}
-                    labels = labels.to(device)
+                inputs = {k: v.to(device) for k, v in inputs.items()}
+                labels = labels.to(device)
 
-                    outputs = model(**inputs, labels=labels)
-                    logits = outputs.logits
-                    loss = outputs.loss
+                outputs = model(**inputs, labels=labels)
+                logits = outputs.logits
+                loss = outputs.loss
 
-                    eval_loss += loss.item()
+                eval_loss += loss.item()
 
-                    preds = torch.argmax(logits, dim=-1)
-                    all_preds.extend(preds.cpu().tolist())
-                    all_labels.extend(labels.cpu().tolist())
+                preds = torch.argmax(logits, dim=-1)
+                all_preds.extend(preds.cpu().tolist())
+                all_labels.extend(labels.cpu().tolist())
 
-            eval_metrics = metric.compute(predictions=all_preds, references=all_labels)
-            eval_loss_mean = eval_loss / len(dataloader)
-            print(
-                f"[{split_name}] Eval loss: {eval_loss_mean:.4f}  |  "
-                f"Eval accuracy: {eval_metrics['accuracy']:.4f}"
-            )
-            return eval_loss_mean, eval_metrics["accuracy"]
 
-        val_match_loss, val_match_acc = run_eval(eval_matched_dataloader, "validation_matched")
-        val_mismatch_loss, val_mismatch_acc = run_eval(eval_mismatched_dataloader, "validation_mismatched")
+        eval_metrics = metric.compute(predictions=all_preds, references=all_labels)
+        eval_loss = eval_loss / len(eval_dataloader)
 
-        avg_acc = (val_match_acc + val_mismatch_acc) / 2.0
+        print(f"Eval loss: {eval_loss:.4f}  |  Eval accuracy: {eval_metrics['accuracy']:.4f}")
 
         ckpt_dir = os.path.join(
             args.output_dir,
@@ -345,17 +317,17 @@ def main():
         tokenizer.save_pretrained(ckpt_dir)
         print(f"Saved checkpoint to {ckpt_dir}")
 
-        if avg_acc > best_eval_acc:
-            best_eval_acc = avg_acc
+        if eval_metrics["accuracy"] > best_eval_acc:
+            best_eval_acc = eval_metrics["accuracy"]
             best_dir = os.path.join(
                 args.output_dir, f"{args.method}_{args.budget}", "best"
             )
             model.save_pretrained(best_dir)
             tokenizer.save_pretrained(best_dir)
-            print(f"New best avg_acc={best_eval_acc:.4f}, saved to {best_dir}")
+            print(f"New best acc={best_eval_acc:.4f}, saved to {best_dir}")
 
     print("\n==== Training finished ====")
-    print(f"Best (avg matched/mismatched) eval accuracy: {best_eval_acc:.4f}")
+    print(f"Best eval accuracy: {best_eval_acc:.4f}")
 
 
 if __name__ == "__main__":

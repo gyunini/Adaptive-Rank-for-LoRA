@@ -1,6 +1,3 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-
 import os
 import re
 import torch
@@ -14,16 +11,12 @@ from transformers import AutoModelForSequenceClassification
 # ==========================================
 # 학습된 체크포인트 경로를 지정
 # 예: ./outputs_sst2/adalora_small/checkpoint-50520
-CHECKPOINT_PATH = "./outputs_mnli/adalora_small/epoch-1"
+# CHECKPOINT_PATH = "./outputs_cola/adalora_small/epoch-25"
+CHECKPOINT_PATH = "./outputs_cola/adalora_large/epoch-25"
 # ==========================================
 
 
 def map_name_to_layer_and_type(name: str):
-    """
-    파라미터 이름에서 layer index와 논문 표기(W_q, W_k, ...)를 뽑는 헬퍼.
-    rank_pattern의 key 또는 state_dict의 key 둘 다 처리 가능하게 작성.
-    """
-    # layer index
     layer_match = re.search(r"layer\.(\d+)\.", name)
     if not layer_match:
         return None, None
@@ -41,18 +34,12 @@ def map_name_to_layer_and_type(name: str):
     elif "intermediate.dense" in name:
         module_type = "$W_{f1}$"
     elif "output.dense" in name:
-        # attention.output.dense는 위에서 이미 잡았으므로
         module_type = "$W_{f2}$"
 
     return layer_idx, module_type
 
 
 def get_ranks_from_rank_pattern(rank_pattern: dict):
-    """
-    AdaLoRA의 rank_pattern(dict)을 이용해
-    (layer, module_type)별 최종 rank를 계산.
-    rank_pattern의 value는 list[0/1] 혹은 bool list, 혹은 tensor일 수 있음.
-    """
     ranks = {}
 
     for name, mask in rank_pattern.items():
@@ -75,10 +62,6 @@ def get_ranks_from_rank_pattern(rank_pattern: dict):
 
 
 def get_ranks_from_lora_E(model):
-    """
-    fallback 용: rank_pattern이 없을 때 lora_E의 non-zero 개수로 rank 추정.
-    (지금은 항상 12가 나오는 상태)
-    """
     ranks = {}
 
     for name, param in model.named_parameters():
@@ -129,7 +112,6 @@ def main():
     print(f"peft_type      : {peft_config.peft_type}")
     print(f"base_model_name: {peft_config.base_model_name_or_path}")
 
-    # AdaLoRA 설정 정보 출력 (디버그용)
     for attr in ["target_r", "init_r", "total_step", "tinit", "tfinal", "deltaT"]:
         if hasattr(peft_config, attr):
             print(f"{attr}: {getattr(peft_config, attr)}")
@@ -138,7 +120,6 @@ def main():
     # print("rank_pattern: >>>>>>>>>>>>>>>>>>>>>>> ", rank_pattern)
     if rank_pattern is not None:
         print(f"\n[rank_pattern detected] type={type(rank_pattern)}, entries={len(rank_pattern)}")
-        # 예시 하나만 출력
         first_key = next(iter(rank_pattern))
         first_val = rank_pattern[first_key]
         if isinstance(first_val, torch.Tensor):
@@ -150,21 +131,17 @@ def main():
               "update_and_allocate가 제대로 호출되지 않았거나, "
               "아직 rank allocation이 끝나기 전 checkpoint일 수 있습니다.")
 
-    # base model + peft model 로드 (fallback용 / 디버그용)
     print("\nLoading full model...")
     base_model = AutoModelForSequenceClassification.from_pretrained(
         peft_config.base_model_name_or_path,
         num_labels=2,
         ignore_mismatched_sizes=True,
     )
-    # PeftModel는 여기선 굳이 안 써도 됨. rank_pattern만 있으면 됨.
 
-    # 1순위: rank_pattern으로부터 rank 계산
     if rank_pattern is not None:
         print("\nCalculating ranks from rank_pattern...")
         ranks = get_ranks_from_rank_pattern(rank_pattern)
     else:
-        # 2순위: 정말로 rank_pattern이 없을 때만 lora_E에서 직접 계산
         print("\nrank_pattern이 없어서 lora_E에서 직접 rank 추정...")
         from peft import PeftModel
         model = PeftModel.from_pretrained(base_model, CHECKPOINT_PATH)

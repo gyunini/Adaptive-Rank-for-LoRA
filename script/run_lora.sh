@@ -1,8 +1,8 @@
 #!/bin/bash
-#SBATCH --job-name=test_lora
+#SBATCH --job-name=test
 #SBATCH --nodelist=ubuntu
-#SBATCH --output=logs/lora_%j.out
-#SBATCH --error=logs/lora_%j.err
+#SBATCH --output=logs/lora_large_mnli_%j.out
+#SBATCH --error=logs/lora_large_mnli_%j.err
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
@@ -16,7 +16,7 @@ source .venv/bin/activate
 
 echo "CUDA: $(python -c 'import torch; print(torch.cuda.is_available())')"
 
-CUDA_DEVICE=2 python src/glue-mnli.py --method adalora --budget small
+CUDA_VISIBLE_DEVICES=3 python src/glue-mnli.py --method lora --budget large
     
 echo ""
 echo "=== 테스트 완료 ==="

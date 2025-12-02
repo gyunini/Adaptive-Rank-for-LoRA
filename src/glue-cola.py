@@ -1,9 +1,5 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-
 import argparse
 import os
-from typing import Dict, Any
 
 import torch
 from torch.utils.data import DataLoader
@@ -54,12 +50,12 @@ def parse_args():
         type=str,
         choices=["small", "large"],
         default="small",
-        help="파라미터 예산: small≈0.32M, large≈1.27M",
+        help="파라미터 예산: small≈0.32M, large≈1.27M (논문 기준)",
     )
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="./outputs_sst2",
+        default="./outputs_cola",
     )
     parser.add_argument(
         "--seed",
@@ -72,10 +68,11 @@ def parse_args():
 
 def get_peft_config(method: str, budget: str, total_step: int | None = None):
     if method == "lora":
+        # 논문: 0.3M budget에서 LoRA r=2, 1.2M에서 r=8
         if budget == "small":
             r = 2
             alpha = 8
-        else:
+        else:  # large
             r = 8
             alpha = 32
 
@@ -92,11 +89,11 @@ def get_peft_config(method: str, budget: str, total_step: int | None = None):
         if budget == "small":
             init_r = 12
             target_r = 2
-            final_rank = 144
-        else:
+            final_rank = 144  # b(T)
+        else:  # large
             init_r = 12
             target_r = 8
-            final_rank = 576
+            final_rank = 576  # b(T)
 
         if total_step is None:
             raise ValueError(
@@ -112,12 +109,12 @@ def get_peft_config(method: str, budget: str, total_step: int | None = None):
             bias="none",
             target_modules=TARGET_MODULES,
             total_step=total_step,
-            tinit=6000,
-            tfinal=22000,
-            deltaT=100,
+            tinit=800,           # 논문 CoLA: ti = 800
+            tfinal=3500,         # 논문 CoLA: tf = 3500
+            deltaT=10,           # 논문 CoLA: ΔT = 10
             beta1=0.85,
             beta2=0.85,
-            orth_reg_weight=0.1,
+            orth_reg_weight=0.5,  # 논문 CoLA: γ = 0.5
         )
 
     else:
@@ -149,8 +146,8 @@ def main():
     model_name = "microsoft/deberta-v3-base"
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # 1) 데이터셋 & 토크나이저
-    raw_datasets = load_dataset("glue", "sst2")
+    # 1) 데이터셋 & 토크나이저 (GLUE-CoLA)
+    raw_datasets = load_dataset("glue", "cola")
     tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=False)
 
     def preprocess_fn(examples):
@@ -166,7 +163,6 @@ def main():
         remove_columns=["sentence"],
     )
 
-    # 2) 모델 로드
     config = AutoConfig.from_pretrained(
         model_name,
         classifier_dropout=0.0,
@@ -177,8 +173,7 @@ def main():
         config=config,
     )
 
-    # 3) total_step 계산
-    num_train_epochs = 24
+    num_train_epochs = 25
     per_device_train_batch_size = 32
     train_dataset_size = len(encoded["train"])
     total_steps = (train_dataset_size // per_device_train_batch_size) * num_train_epochs
@@ -186,7 +181,6 @@ def main():
     print(f"train_dataset_size = {train_dataset_size}")
     print(f"total_steps (expected optimizer steps) = {total_steps}")
 
-    # 4) LoRA / AdaLoRA 설정
     peft_config = get_peft_config(
         args.method,
         args.budget,
@@ -198,9 +192,8 @@ def main():
     print("==== Trainable parameter statistics ====")
     print_trainable_parameters(model)
 
-    # 5) Data collator & metric & dataloader
     data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
-    metric = evaluate.load("glue", "sst2")
+    metric = evaluate.load("glue", "cola")
 
     train_dataloader = DataLoader(
         encoded["train"],
@@ -215,7 +208,9 @@ def main():
         collate_fn=data_collator,
     )
 
-    # 6) Optimizer & Scheduler
+    # 논문 CoLA: learning rate = 5e-4
+    lr = 5e-4
+
     no_decay = ["bias", "LayerNorm.weight", "layer_norm.weight"]
     optimizer_grouped_parameters = [
         {
@@ -235,7 +230,7 @@ def main():
             "weight_decay": 0.0,
         },
     ]
-    optimizer = AdamW(optimizer_grouped_parameters, lr=8e-4)
+    optimizer = AdamW(optimizer_grouped_parameters, lr=lr)
 
     warmup_steps = int(total_steps * 0.1)
     lr_scheduler = get_linear_schedule_with_warmup(
@@ -245,7 +240,7 @@ def main():
     )
 
     global_step = 0
-    best_eval_acc = 0.0
+    best_eval_mcc = -1e9 
 
     os.makedirs(os.path.join(args.output_dir, f"{args.method}_{args.budget}"), exist_ok=True)
 
@@ -257,11 +252,7 @@ def main():
         for step, batch in enumerate(train_dataloader):
             global_step += 1
 
-            # DataCollatorWithPadding이 label -> labels로 바꿔줌
             labels = batch["labels"]
-
-            # model.forward에 들어가면 안 되는 키(idx, labels)는 빼고 넘기기
-            # (BatchEncoding이라 pop이 살짝 애매할 수 있으니 새 dict로 만드는 게 깔끔)
             inputs = {k: v for k, v in batch.items() if k not in ["labels", "label", "idx"]}
 
             inputs = {k: v.to(device) for k, v in inputs.items()}
@@ -290,7 +281,6 @@ def main():
                     f"epoch_loss_avg: {avg_loss:.4f}"
                 )
 
-
         # ====== Epoch 끝난 후 평가 ======
         model.eval()
         all_preds = []
@@ -315,11 +305,11 @@ def main():
                 all_preds.extend(preds.cpu().tolist())
                 all_labels.extend(labels.cpu().tolist())
 
-
         eval_metrics = metric.compute(predictions=all_preds, references=all_labels)
         eval_loss = eval_loss / len(eval_dataloader)
 
-        print(f"Eval loss: {eval_loss:.4f}  |  Eval accuracy: {eval_metrics['accuracy']:.4f}")
+        mcc = eval_metrics["matthews_correlation"]
+        print(f"Eval loss: {eval_loss:.4f}  |  Matthews corr: {mcc:.4f}")
 
         ckpt_dir = os.path.join(
             args.output_dir,
@@ -330,17 +320,17 @@ def main():
         tokenizer.save_pretrained(ckpt_dir)
         print(f"Saved checkpoint to {ckpt_dir}")
 
-        if eval_metrics["accuracy"] > best_eval_acc:
-            best_eval_acc = eval_metrics["accuracy"]
+        if mcc > best_eval_mcc:
+            best_eval_mcc = mcc
             best_dir = os.path.join(
                 args.output_dir, f"{args.method}_{args.budget}", "best"
             )
             model.save_pretrained(best_dir)
             tokenizer.save_pretrained(best_dir)
-            print(f"New best acc={best_eval_acc:.4f}, saved to {best_dir}")
+            print(f"New best matthews={best_eval_mcc:.4f}, saved to {best_dir}")
 
     print("\n==== Training finished ====")
-    print(f"Best eval accuracy: {best_eval_acc:.4f}")
+    print(f"Best Matthews correlation: {best_eval_mcc:.4f}")
 
 
 if __name__ == "__main__":

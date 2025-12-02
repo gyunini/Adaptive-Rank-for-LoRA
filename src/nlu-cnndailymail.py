@@ -1,6 +1,3 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-
 import argparse
 import os
 from dataclasses import dataclass
@@ -28,7 +25,6 @@ from peft import (
 
 
 TARGET_MODULES = [
-    # BART 에서 논문처럼 Wq, Wk, Wv, Wo, Wf1, Wf2 에 해당하는 모듈 이름들
     "q_proj", "k_proj", "v_proj", "out_proj", "fc1", "fc2"
 ]
 
@@ -65,11 +61,6 @@ def parse_args():
 
 
 def get_peft_config(method: str, budget: str, total_step: int = None):
-    """
-    budget:
-      - small: 논문 0.32M 수준 (LoRAr=2, b(T)=144)  => param 0.08% 설정에 따름
-      - large: 논문 1.27M 수준 (LoRAr=8, b(T)=576)  => param 0.32% 설정에 따름
-    """
     if method == "lora":
         if budget == "small":
             r = 1 
@@ -88,8 +79,6 @@ def get_peft_config(method: str, budget: str, total_step: int = None):
         )
 
     elif method == "adalora":
-        # 논문 부록 E 의 설정을 반영 (Table 12)
-
         if budget == "small":
             init_r = 2
             target_r = 1
@@ -111,14 +100,12 @@ def get_peft_config(method: str, budget: str, total_step: int = None):
             bias="none",
             target_modules=TARGET_MODULES,
             total_step=total_step,
-            # ===== 논문 Table 8 의 SST-2 설정 =====
             tinit=5000,     # ti
             tfinal=85000,   # tf
             deltaT=100,     # ΔT
             beta1=0.85,     # 중요도 EMA (언급은 없으나 NLU 실험 설정과 동일하게 0.85 사용)
             beta2=0.85,
             orth_reg_weight=0.1,  # γ 
-            # =====================================
         )
 
     else:
@@ -148,7 +135,6 @@ def main():
 
     model_name = "facebook/bart-large"   #NLU 과제는 BART-large 사용
 
-    # 1) 데이터셋 & 토크나이저
     raw_datasets = load_dataset("cnn_dailymail", "3.0.0")  # 3.0.0 버전 사용
     tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=False) 
     
@@ -160,8 +146,6 @@ def main():
             examples["article"],
             truncation=True,
             max_length=max_source_length,
-            # 필요하면 padding도 켜세요 (Trainer 쓰면 보통 켭니다)
-            # padding="max_length",
         )
         labels = tokenizer(
             text_target=examples["highlights"], 
@@ -190,7 +174,6 @@ def main():
         config=config
     )
 
-    # 3) LoRA / AdaLoRA 설정
     # AdaLoRA를 위해 total_step 계산 필요
     num_train_epochs = 15
     per_device_train_batch_size = 32
@@ -204,7 +187,6 @@ def main():
     print("==== Trainable parameter statistics ====")
     print_trainable_parameters(model)
 
-    # 4) Data collator & metric
     data_collator = DataCollatorForSeq2Seq(tokenizer=tokenizer, model=model)
     metric = evaluate.load("rouge")
 
@@ -233,7 +215,6 @@ def main():
         return {k: round(v * 100, 4) for k, v in result.items()}
 
 
-    # 5) TrainingArguments 
     training_args = Seq2SeqTrainingArguments(
         output_dir=os.path.join(args.output_dir, f"{args.method}_{args.budget}"),
         eval_strategy="epoch",   
@@ -258,14 +239,12 @@ def main():
 
         predict_with_generate=True,
         generation_max_length=max_target_length,
-        #논문 9페이지 CNN/DailyMail 평가 설정 (beam length = 4)
         generation_num_beams=4,
         eval_accumulation_steps=4,
     )
 
     
 
-    # 6) Trainer
     trainer = Seq2SeqTrainer(
         model=model,
         args=training_args,
@@ -276,11 +255,9 @@ def main():
         compute_metrics=compute_metrics,
     )
 
-    #논문 9페이지 CNN/DailyMail 평가 설정 (beam length = 4)
     trainer.model.config.max_length = max_target_length
     trainer.model.config.num_beams = 4
 
-    # 7) Train & evaluate
     trainer.train()
     eval_res = trainer.evaluate()
     print("==== Final eval on validation set ====")
