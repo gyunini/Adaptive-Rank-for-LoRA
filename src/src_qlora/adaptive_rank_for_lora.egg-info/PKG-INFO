@@ -1,0 +1,17 @@
+Metadata-Version: 2.4
+Name: adaptive-rank-for-lora
+Version: 0.1.0
+Summary: Adaptive Rank for LoRA - Final project of optimization for AI 2025-2
+Requires-Python: >=3.8
+Requires-Dist: torch>=2.0.0
+Requires-Dist: transformers>=4.30.0
+Requires-Dist: peft>=0.5.0
+Requires-Dist: datasets>=2.0.0
+Requires-Dist: evaluate>=0.4.0
+Requires-Dist: jupyter>=1.0.0
+Requires-Dist: ipykernel>=6.0.0
+Requires-Dist: tiktoken>=0.5.0
+Requires-Dist: protobuf>=3.20.0
+Requires-Dist: sentencepiece>=0.1.0
+Requires-Dist: scipy>=1.0.0
+Requires-Dist: scikit-learn>=1.0.0
