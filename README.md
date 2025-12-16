@@ -10,6 +10,7 @@ The repository consists of:
 2. Suggested Modificated Method of Adaptive Rank Allocation : **Dynamic Rank Scheduling via Loss Plateau**
 3. AdaLoRA + QLoRA Implementation
 4. Codes for Analysis (rank_visualization, memory_calculation)
+5. [Final Report](Optimization_For_AI_Final_Project_Report%20.pdf)
 
 ---
 ## Environment Setup (uv, slurm)
